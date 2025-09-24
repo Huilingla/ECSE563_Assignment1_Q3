@@ -1,53 +1,98 @@
-function [If, Vf] = fault(Y, Init, idfault, Zf)
-% FAULT Calculate fault currents and node voltages during balanced three-phase faults
-% Using Matrix Inversion Lemma approach from the slides
+function [If, Vf] = fault(Y, Iint, idfault, Zf)
+% FAULT Calculate fault currents and node voltages during balanced three-phase faults.
 %
-% Inputs:
-%   Y       - admittance matrix of the healthy network
-%   Init    - vector of pre-fault internal currents
-%   idfault - index of the faulted node
-%   Zf      - impedance of the fault
+%   [IF, VF] = FAULT(Y, IINT, IDFAULT, ZF) computes the fault current and
+%   node voltages during a balanced three-phase fault using Thevenin equivalent.
 %
-% Outputs:
-%   If      - fault current at idfault
-%   Vf      - vector of network node voltages during the fault
+%   Inputs:
+%     Y       - NxN admittance matrix of the healthy network
+%     Iint    - Nx1 vector of pre-fault internal current injections
+%     idfault - Scalar index of the faulted node
+%     Zf      - Impedance of the fault (scalar)
+%
+%   Outputs:
+%     If      - Fault current at the faulted node (complex)
+%     Vf      - Nx1 vector of node voltages during the fault
+%
+%   Method:
+%     1. Find Thevenin equivalent at faulted node
+%     2. Calculate fault current using Thevenin equivalent circuit
+%     3. Compute node voltages during fault conditions
 
-    % Number of buses
-    nbus = size(Y, 1);
+    fprintf('=== THREE-PHASE FAULT ANALYSIS ===\n\n');
+    fprintf('Fault at node %d with Zf = %.4f + j%.4f p.u.\n', ...
+            idfault, real(Zf), imag(Zf));
     
-    % Pre-fault open-circuit voltages (slide 6)
-    Voc = linsolve(Y, Init);
-    
-    if isinf(Zf)  % No fault case
-        Vf = Voc;
-        If = 0;
-        return;
+    % Step 0: Validate inputs
+    N = size(Y, 1);
+    if length(Iint) ~= N
+        error('Iint must have the same dimension as Y');
+    end
+    if idfault < 1 || idfault > N
+        error('idfault must be between 1 and %d', N);
     end
     
-    % Calculate Thévenin equivalent parameters (slides 14-15)
-    % Zeq = Zii (input impedance at faulted node)
-    ei = zeros(nbus, 1);
-    ei(idfault) = 1;
+    % Step 1: Calculate Thevenin equivalent using impedance matrix
+    fprintf('\nStep 1: Calculating Thevenin equivalent at node %d\n', idfault);
+    fprintf('---------------------------------------------------\n');
     
-    % Solve for Zii: Y * v = ei to get the ith column of Z
-    v_col = linsolve(Y, ei);
-    Zeq = v_col(idfault);  % Zii = e_i^T * Y^-1 * e_i
+    % Calculate impedance matrix Z = Y^(-1) using linsolve
+    Z = zeros(N, N);
+    I_matrix = eye(N);
+    for col = 1:N
+        e_col = I_matrix(:, col);
+        z_col = linsolve(Y, e_col);
+        Z(:, col) = z_col;
+    end
     
-    % Eeq = Voc at faulted node (slide 15)
-    Eeq = Voc(idfault);
+    % Thevenin voltage (pre-fault voltage at faulted node)
+    V_prefault = linsolve(Y, Iint);
+    Eeq = V_prefault(idfault);
+    fprintf('Thevenin voltage Eeq at node %d: %.4f + j%.4f p.u. (|Eeq| = %.4f p.u.)\n', ...
+            idfault, real(Eeq), imag(Eeq), abs(Eeq));
     
-    % Calculate fault current using Thévenin equivalent (slide 16)
-    if Zf == 0  % Bolted fault
-        If = Eeq / Zeq;
+    % Thevenin impedance (diagonal element of Z matrix)
+    Zeq = Z(idfault, idfault);
+    fprintf('Thevenin impedance Zeq at node %d: %.4f + j%.4f p.u. (|Zeq| = %.4f p.u.)\n', ...
+            idfault, real(Zeq), imag(Zeq), abs(Zeq));
+    
+    % Step 2: Calculate fault current
+    fprintf('\nStep 2: Calculating fault current\n');
+    fprintf('---------------------------------\n');
+    
+    % Fault admittance (inverse of fault impedance)
+    if Zf == 0
+        yf = inf;  % Bolted fault
     else
-        If = Eeq / (Zeq + Zf);
+        yf = 1 / Zf;
     end
     
-    % Calculate fault voltages using Matrix Inversion Lemma (slides 20-22)
-    % Vf = Voc - Y^-1 * ei * If  (from slide 22)
-    Vf = Voc - v_col * If;
+    % Fault current using Thevenin equivalent: If = Eeq / (Zeq + Zf)
+    If = Eeq / (Zeq + Zf);
+    fprintf('Fault current If: %.4f + j%.4f p.u. (|If| = %.4f p.u.)\n', ...
+            real(If), imag(If), abs(If));
     
-    % Alternative MIL formulation from slide 21:
-    % Vf = Voc - (v_col * v_col' * Init) / (Zeq + Zf);
-    % But the first method is more numerically stable
+    % Step 3: Calculate node voltages during fault
+    fprintf('\nStep 3: Calculating node voltages during fault\n');
+    fprintf('---------------------------------------------\n');
+    
+    % External current injection vector: Iext = -If at faulted node, 0 elsewhere
+    Iext = zeros(N, 1);
+    Iext(idfault) = -If;
+    
+    % Total current during fault: Ifault = Iint + Iext
+    Ifault = Iint + Iext;
+    
+    % Node voltages during fault: Vf = Z * Ifault
+    Vf = Z * Ifault;
+    
+    fprintf('Node voltages during fault calculated successfully\n');
+    
+    % Display results
+    fprintf('\nRESULTS SUMMARY:\n');
+    fprintf('================\n');
+    fprintf('Faulted node: %d\n', idfault);
+    fprintf('Fault impedance Zf: %.4f + j%.4f p.u.\n', real(Zf), imag(Zf));
+    fprintf('Fault current |If|: %.4f p.u.\n', abs(If));
+    fprintf('Voltage at faulted node |Vf(%d)|: %.4f p.u.\n', idfault, abs(Vf(idfault)));
 end
